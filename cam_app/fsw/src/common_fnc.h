@@ -16,7 +16,7 @@ typedef unsigned char byte;
 #include <stdlib.h>
 #include <security.h>
 
-void read_image_data(byte** data, size_t* size, const char* filename);
+bool read_image_data(byte** data, size_t* size, const char* filename);
 
 void read_encrypted_data(byte** data, size_t* size, const char* filename);
 

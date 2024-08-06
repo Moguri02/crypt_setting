@@ -37,6 +37,7 @@
 #include "time.h"
 #include "unistd.h"
 #include "pthread.h"
+#include <stdbool.h>
 
 /* Encypt Library */
 #include "common_fnc.h"
@@ -181,6 +182,51 @@ CFE_Status_t CAM_APP_ShotPeriodCmd(const CAM_APP_ShotPeriodCmd_t *Msg)
     return CFE_SUCCESS; 
 }
 
+byte Global_Security_Key[32] = {0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 ,0x30 };  // 전역 변수로 선언하여 키를 저장
+
+CFE_Status_t CAM_APP_SecurityKeyCmd(const CAM_APP_SecurityKeyCmd_t *Msg)
+{
+    // 수신한 키를 이벤트 로그에 출력
+    char received_key_string[96] = {0};
+    for (int i = 0; i < 32; i++)
+    {
+        sprintf(&received_key_string[i * 3], "%02x ", Msg->Payload.Key[i]);
+    }
+
+    // 수신한 키를 전역 변수에 저장
+    memcpy(Global_Security_Key, Msg->Payload.Key, sizeof(Global_Security_Key));
+
+    // 저장된 키를 이벤트 로그에 출력
+    char stored_key_string[96] = {0};
+    for (int i = 0; i < 32; i++)
+    {
+        sprintf(&stored_key_string[i * 3], "%02x ", Global_Security_Key[i]);
+    }
+
+    // 수신된 키와 저장된 키를 비교
+    if (memcmp(Msg->Payload.Key, Global_Security_Key, sizeof(Global_Security_Key)) == 0)
+    {
+        CFE_EVS_SendEvent(CAM_APP_SECURITY_KEY_INF_EID, CFE_EVS_EventType_INFORMATION,
+                          "CAM_APP: Security Key has been successfully stored and verified.");
+    }
+    else
+    {
+        CFE_EVS_SendEvent(CAM_APP_SECURITY_KEY_INF_EID, CFE_EVS_EventType_ERROR,
+                          "CAM_APP: Security Key mismatch! Verification failed.");
+    }
+
+    // 최종적으로 저장된 키 값을 출력
+    char final_key_string[96] = {0};
+    for (int i = 0; i < 32; i++)
+    {
+        sprintf(&final_key_string[i * 3], "%02x ", Global_Security_Key[i]);
+    }
+    CFE_EVS_SendEvent(CAM_APP_SECURITY_KEY_INF_EID, CFE_EVS_EventType_INFORMATION,
+                      "CAM_APP: Final Key: [%s]", final_key_string);
+
+    return CFE_SUCCESS;
+}
+
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * **/
 /*                                                                            */
 /* A Cam_app Start, Stop Process to using thread                              */
@@ -225,7 +271,11 @@ void *startloop(void *arg)
                 // 이미지 데이터 읽기
                 byte* data = NULL;
                 size_t size = 0;
-                read_image_data(&data, &size, original_filename);
+                if (!read_image_data(&data, &size, original_filename))
+                {
+                    printf("Failed to read image data\n");
+                    continue;
+                }
 
                 // 패딩 추가
                 pad_data(&data, &size);
@@ -234,15 +284,13 @@ void *startloop(void *arg)
                                   "CAM_APP: Padding added to data");
 
                 // 암호화 키
-                byte key[Nk] = {0}; // 적절한 값으로 초기화 필요
                 byte round_keys[(Nr+1) * Nb];
 
                 // 암호화 진행
-                encrypt_data(data, size, key, round_keys);
+                encrypt_data(data, size, Global_Security_Key, round_keys);
                 printf("Data encryption completed\n");
                 CFE_EVS_SendEvent(CAM_APP_SECURITY_PROCESSING_INF_EID, CFE_EVS_EventType_INFORMATION,
                                   "CAM_APP: Data encryption completed");
-
 
                 // 암호화된 데이터를 16진수 문자열로 변환하여 별도의 파일에 저장
                 char encrypted_filename[100];
@@ -265,6 +313,8 @@ void *startloop(void *arg)
                     printf("Failed to open encrypted file: %s\n", encrypted_filename);
                     CFE_EVS_SendEvent(CAM_APP_SECURITY_PROCESSING_INF_EID, CFE_EVS_EventType_ERROR,
                                       "CAM_APP: Failed to open encrypted file: %s", encrypted_filename);
+                    free(data);
+                    continue;
                 }
 
                 
@@ -284,7 +334,7 @@ void *startloop(void *arg)
                 }
 
                 // 복호화 진행
-                decrypt_data(encrypted_data, encrypted_size, key, round_keys);
+                decrypt_data(encrypted_data, encrypted_size, Global_Security_Key, round_keys);
                 printf("Data decryption completed\n");                
 
                 // 패딩 제거
@@ -302,7 +352,6 @@ void *startloop(void *arg)
                 free(data);
                 //free(encrypted_data);
             }
-
 
             sleep(Period);
         }
@@ -359,42 +408,3 @@ CFE_Status_t CAM_APP_SecurityStopCmd(const CAM_APP_SecurityStopCmd_t *Msg)
     return CFE_SUCCESS;
 }
 
-byte Global_Security_Key[32] = {0};  // 전역 변수로 선언하여 키를 저장
-
-CFE_Status_t CAM_APP_SecurityKeyCmd(const CAM_APP_SecurityKeyCmd_t *Msg)
-{
-    // 수신한 키를 이벤트 로그에 출력
-    char received_key_string[96] = {0};
-    for (int i = 0; i < 32; i++)
-    {
-        sprintf(&received_key_string[i * 3], "%02x ", Msg->Payload.Key[i]);
-    }
-    CFE_EVS_SendEvent(CAM_APP_SECURITY_KEY_INF_EID, CFE_EVS_EventType_INFORMATION,
-                      "CAM_APP: Received Key: [%s]", received_key_string);
-
-    // 수신한 키를 전역 변수에 저장
-    memcpy(Global_Security_Key, Msg->Payload.Key, sizeof(Global_Security_Key));
-
-    // 저장된 키를 이벤트 로그에 출력
-    char stored_key_string[96] = {0};
-    for (int i = 0; i < 32; i++)
-    {
-        sprintf(&stored_key_string[i * 3], "%02x ", Global_Security_Key[i]);
-    }
-    CFE_EVS_SendEvent(CAM_APP_SECURITY_KEY_INF_EID, CFE_EVS_EventType_INFORMATION,
-                      "CAM_APP: Stored Key: [%s]", stored_key_string);
-
-    // 수신된 키와 저장된 키를 비교
-    if (memcmp(Msg->Payload.Key, Global_Security_Key, sizeof(Global_Security_Key)) == 0)
-    {
-        CFE_EVS_SendEvent(CAM_APP_SECURITY_KEY_INF_EID, CFE_EVS_EventType_INFORMATION,
-                          "CAM_APP: Security Key has been successfully stored and verified.");
-    }
-    else
-    {
-        CFE_EVS_SendEvent(CAM_APP_SECURITY_KEY_INF_EID, CFE_EVS_EventType_ERROR,
-                          "CAM_APP: Security Key mismatch! Verification failed.");
-    }
-
-    return CFE_SUCCESS;
-}
